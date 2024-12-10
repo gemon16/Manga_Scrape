@@ -169,92 +169,92 @@ def get_image_urls(url_list, page_limit=None, retries=5, wait_time=3):
 
     return all_image_data,{"image_data": all_image_data, "errors": error_log}
 
-
-
-
 def extract_and_sort(data):
     """
-    Sort a list or dictionary based on the volume and chapter numbers embedded in each string.
-    Entries with 'vol-00' and 'ch-000' are excluded from the output.
-
-    Parameters:
-        data (list | dict): A list of strings or a dictionary where keys may contain 'vol-##-ch-###' patterns.
-
-    Returns:
-        list | dict: A new list or dictionary sorted by (ch, vol) extracted from the keys or list entries,
-                     excluding 'vol-00-ch-000' and 'ch-000' entries.
+    Sort a list or dictionary based on embedded volume, chapter, episode, or prologue in each string.
+    Recognizes 'volume-##-episode-###', 'volume-##-prologue-###', 'vol-##-ch-###', and 'ch-###' patterns,
+    sorting accordingly. Logs all unmatched keys at the end.
     """
-    # Check input type
-    input_type = type(data)
-    if not isinstance(data, (list, dict)):
-        raise TypeError("Input must be either a list or a dictionary.")
-    
-    def sort_key(link):
-        # Extract 'vol-##-ch-###' pattern
-        match = re.search(r'vol-(\d+)-ch-(\d+)', link)
-        if match:
-            vol, ch = int(match.group(1)), int(match.group(2))
-            print(f"Matched vol-{vol}-ch-{ch} for key: {link}")  # Debug
-            return (ch, vol)  # Sort by chapter, then volume
+    unmatched_keys = []  # List to store unmatched keys
 
-        # Extract 'ch-###' pattern only
-        match_chapter = re.search(r'ch-(\d+)', link)
+    def sort_key(link):
+        # Match 'volume-##-episode-###'
+        match_episode = re.search(r'volume-(\d+)-episode-(\d+)', link.lower())
+        if match_episode:
+            vol = int(match_episode.group(1))
+            episode = int(match_episode.group(2))
+            print(f"Matched volume-{vol}-episode-{episode} for key: {link}")
+            return (vol, 0, episode, 0)
+
+        # Match 'volume-##-prologue-###'
+        match_prologue = re.search(r'volume-(\d+)-prologue-(\d+)', link.lower())
+        if match_prologue:
+            vol = int(match_prologue.group(1))
+            prologue = int(match_prologue.group(2))
+            print(f"Matched volume-{vol}-prologue-{prologue} for key: {link}")
+            return (vol, 0, prologue, 0)
+
+        # Match 'vol-##-ch-###'
+        match_chapter = re.search(r'vol-(\d+)-ch-(\d+)', link.lower())
         if match_chapter:
-            ch = int(match_chapter.group(1))
-            print(f"Matched ch-{ch} for key: {link}")  # Debug
-            return (ch, 0)  # Default volume to 0 but still sorted by chapter
-        
-        print(f"No match for key: {link}")  # Debug
-        return (float('inf'), float('inf'))  # Non-matching entries placed at the end
+            vol = int(match_chapter.group(1))
+            ch = int(match_chapter.group(2))
+            print(f"Matched vol-{vol}-ch-{ch} for key: {link}")
+            return (vol, ch, 0, 0)
+
+        # Match 'ch-###' (standalone chapter)
+        match_standalone_ch = re.search(r'ch-(\d+)', link.lower())
+        if match_standalone_ch:
+            ch = int(match_standalone_ch.group(1))
+            print(f"Matched ch-{ch} for key: {link}")
+            return (0, ch, 0, 0)
+
+        # Log unmatched link
+        unmatched_keys.append(link)
+        print(f"No match for link: {link}")
+        return (float('inf'), float('inf'), float('inf'), float('inf'))
 
     if isinstance(data, list):
-        # Filter out entries with vol-00 and ch-000
+        # Filter out invalid links
         filtered_data = [
             link for link in data 
-            if not re.search(r'vol-00-ch-000', link) and not re.search(r'ch-000', link)
+            if re.search(r'(volume-\d+-(episode|prologue)-\d+|vol-\d+-ch-\d+|ch-\d+)', link.lower())
         ]
-
-        # Debugging: Print filtered data
-        print(f"Filtered list data: {filtered_data}")
-
         # Sort the filtered list
-        output = sorted(filtered_data, key=sort_key)
+        sorted_data = sorted(filtered_data, key=sort_key)
 
     elif isinstance(data, dict):
-        # Filter out keys with vol-00 and ch-000
+        # Filter out invalid links in dictionary keys
         filtered_data = {
             k: v for k, v in data.items()
-            if not re.search(r'vol-00-ch-000', k) and not re.search(r'ch-000', k)
+            if re.search(r'(volume-\d+-(episode|prologue)-\d+|vol-\d+-ch-\d+|ch-\d+)', k.lower())
         }
-
-        # Debugging: Print filtered dictionary keys
-        print(f"Filtered dictionary keys: {list(filtered_data.keys())}")
-
-        # Sort the dictionary by the keys
+        # Sort the filtered dictionary
         sorted_keys = sorted(filtered_data.keys(), key=sort_key)
-        print(f"Sorted keys: {sorted_keys}")  # Debug
-        output = {k: filtered_data[k] for k in sorted_keys}
+        sorted_data = {k: filtered_data[k] for k in sorted_keys}
 
-    # Check output type
-    output_type = type(output)
-    if input_type != output_type:
-        print("Error: Output type does not match input type!")
-        print(f"Input type: {input_type}, Output type: {output_type}")
-        raise TypeError("Mismatch between input and output types.")
-    
-    return output
+    else:
+        raise TypeError("Input must be a list or dictionary.")
+
+    # Print all unmatched keys
+    if unmatched_keys:
+        print("\nUnmatched Keys:")
+        for key in unmatched_keys:
+            print(key)
+
+    return sorted_data
 
 
 def download_manga_images(image_data, manga_name):
     """
-    Downloads images for a manga into structured folders based on volume and chapter.
+    Downloads images for a manga into structured folders based on volume and chapter/episode/prologue.
 
     Parameters:
-        image_data (dict): A dictionary where keys are URLs with 'vol-<number>-ch-<number>'
-                           or URLs matching various chapter formats, and values are lists
-                           of image URLs to download.
+        image_data (dict): A dictionary where keys are URLs with recognized patterns such as
+                           'volume-##-episode-###', 'volume-##-prologue-###', 'vol-##-ch-###', or 'ch-###',
+                           and values are lists of image URLs to download.
         manga_name (str): The name of the manga, used as the main folder name.
-    
+
     Returns:
         None
     """
@@ -263,19 +263,29 @@ def download_manga_images(image_data, manga_name):
     os.makedirs(main_folder, exist_ok=True)
 
     for url, image_urls in image_data.items():
-        # Extract volume and chapter from the URL
-        match = re.search(r'(vol-(\d+))?-(ch-\d+(-\d+)?)', url)
-        if match:
-            vol = match.group(2) or "00"  # Default volume to 00 if not present
-            ch = match.group(3)
-            subfolder_name = f"vol-{vol}-{ch}"
+        # Extract details based on patterns
+        match_episode = re.search(r'volume-(\d+)-episode-(\d+)', url.lower())
+        match_prologue = re.search(r'volume-(\d+)-prologue-(\d+)', url.lower())
+        match_chapter = re.search(r'vol-(\d+)-ch-(\d+)', url.lower())
+        match_standalone_ch = re.search(r'ch-(\d+)', url.lower())
+
+        if match_episode:
+            vol = match_episode.group(1)
+            episode = match_episode.group(2)
+            subfolder_name = f"volume-{vol}-episode-{episode}"
+        elif match_prologue:
+            vol = match_prologue.group(1)
+            prologue = match_prologue.group(2)
+            subfolder_name = f"volume-{vol}-prologue-{prologue}"
+        elif match_chapter:
+            vol = match_chapter.group(1)
+            ch = match_chapter.group(2)
+            subfolder_name = f"vol-{vol}-ch-{ch}"
+        elif match_standalone_ch:
+            ch = match_standalone_ch.group(1)
+            subfolder_name = f"ch-{ch}"
         else:
-            ch_match = re.search(r'ch-(\d+(-\d+)?)', url)
-            if ch_match:
-                ch = ch_match.group(0)
-                subfolder_name = f"vol-00-{ch}"
-            else:
-                subfolder_name = "unknown"
+            subfolder_name = "unknown"
 
         # Create the subfolder
         subfolder = os.path.join(main_folder, subfolder_name)
