@@ -483,9 +483,10 @@ def append_pdfs_to_manga_collection(input_folder="input_pdfs", collection_folder
 
 # %%
 # Run and print the image URLs to verify output
-url = "https://mangapark.io/title/25039-en-billy-bat"
-manga_title = "Billy"
-links = get_manga_links(url, manga_title,page_limit=None)
+url = "https://mangapark.io/title/219752-en-berserk"
+keyword = "Berserk"
+manga_title = 'Berserk - Kentaro Miura'
+links = get_manga_links(url, keyword,page_limit=None)
 
 # %%
 ordered = extract_and_sort(links)
@@ -493,15 +494,15 @@ ordered = extract_and_sort(links)
 image_urls,error_log = get_image_urls(ordered)
 
 #%%
-download_manga_images(image_urls, 'Billy Bat - Naoki Urasawa')
+download_manga_images(image_urls, manga_title)
 # %%
-convert_chapter_pdfs(manga_folder='Billy Bat - Naoki Urasawa')
+convert_chapter_pdfs(manga_folder=manga_title)
 # %%
-reorder_files_in_place('Billy Bat - Naoki Urasawa')
+reorder_files_in_place(manga_title)
 
 
 # %%
-append_pdfs_to_manga_collection(input_folder='Billy Bat - Naoki Urasawa')
+append_pdfs_to_manga_collection(input_folder=manga_title)
 
 
 
