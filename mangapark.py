@@ -6,7 +6,7 @@ from selenium.webdriver.chrome.options import Options
 import re
 import os
 import requests
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 import pikepdf
 import time
 
@@ -96,7 +96,7 @@ def get_manga_links(url, manga_title, page_limit=None):
     return list(filtered_hrefs)
 
 
-def get_image_urls(url_list, page_limit=None, retries=5, wait_time=3):
+def get_image_urls(url_list, page_limit=None, retries=5, wait_time=4, min_images=10):
     driver = None  # Initialize driver outside the loop
     all_image_data = {}  # Dictionary to store image data
     error_log = []  # To store URLs and their error codes
@@ -106,49 +106,53 @@ def get_image_urls(url_list, page_limit=None, retries=5, wait_time=3):
         driver = get_driver_with_options()  # Start the driver once initially
 
         for url in url_list:
-            # Stop if we've reached the page limit
             if page_limit is not None and pages_processed >= page_limit:
                 print(f"Page limit of {page_limit} reached. Stopping.")
                 break
-            
-            print(f"Checking URL: {url}")  # Print the URL every time it checks
+
+            print(f"Checking URL: {url}")
             retries_left = retries  # Set the initial retry count
 
             while retries_left > 0:
                 try:
-                    driver.get(url)
-                    
-                    # Wait for the page to load completely and for images to be present
-                    print(f"Loading page: {url}")
-                    WebDriverWait(driver, 3).until(
-                        EC.presence_of_all_elements_located((By.TAG_NAME, "img"))
-                    )
-                    print(f"Page {url} loaded.")
-                    
-                    # Locate all img tags with the specified class across the entire page
-                    image_tags = driver.find_elements(By.CSS_SELECTOR, "img.w-full.h-full")
-                    
-                    if not image_tags:
-                        # If no images are found, log an error and retry
-                        print(f"No images found on {url}. Retrying...")
-                        retries_left -= 1
-                        if retries_left > 0:
-                            print(f"Retrying {url} ({retries_left} retries left)...")
-                            time.sleep(wait_time)  # Wait before retrying
+                    found_sufficient_images = False
+
+                    for server in range(1, 5):  # Attempt up to 4 servers
+                        server_url = url.replace("server-1", f"server-{server}")
+                        driver.get(server_url)
+                        print(f"Loading page: {server_url}")
+
+                        WebDriverWait(driver, 3).until(
+                            EC.presence_of_all_elements_located((By.TAG_NAME, "img"))
+                        )
+                        print(f"Page {server_url} loaded.")
+
+                        image_tags = driver.find_elements(By.CSS_SELECTOR, "img.w-full.h-full")
+
+                        if not image_tags:
+                            print(f"No images found on {server_url}. Trying next server...")
                             continue
-                        else:
-                            error_log.append({"url": url, "error_code": "NO_IMAGES_FOUND"})
-                            all_image_data[url] = []  # Add empty list for consistency
-                            break  # Exit the retry loop after the max retries
-                    else:
-                        # Found images, process them
-                        print(f"Found {len(image_tags)} images with the specified class on {url}.")
+
                         image_src_urls = [img.get_attribute("src") for img in image_tags]
-                        all_image_data[url] = image_src_urls[:160]  # Limit to 160 images per URL
-                        pages_processed += 1
-                        break  # Exit the retry loop once successful
+
+                        if len(image_src_urls) >= min_images:
+                            print(f"Found {len(image_tags)} images on {server_url}.")
+                            all_image_data[url] = image_src_urls[:160]  # Limit to 160 images per URL
+                            pages_processed += 1
+                            found_sufficient_images = True
+                            break  # Exit server loop if successful
+                        else:
+                            print(f"Only {len(image_src_urls)} images found on {server_url}. Trying next server...")
+
+                    if found_sufficient_images:
+                        break  # Exit retry loop if images are found
+                    else:
+                        print(f"Failed to find enough images on all servers for {url}.")
+                        error_log.append({"url": url, "error_code": "INSUFFICIENT_IMAGES"})
+                        all_image_data[url] = []  # Add empty list for consistency
+                        break  # Exit retry loop
+
                 except Exception as e:
-                    # Reinitialize driver if there is an error
                     print(f"Error processing {url}: {e}")
                     retries_left -= 1
                     if retries_left > 0:
@@ -167,7 +171,10 @@ def get_image_urls(url_list, page_limit=None, retries=5, wait_time=3):
         if driver:
             driver.quit()  # Ensure the driver is closed at the end
 
-    return all_image_data,{"image_data": all_image_data, "errors": error_log}
+    return all_image_data, {"image_data": all_image_data, "errors": error_log}
+
+
+
 
 def extract_and_sort(data):
     """
@@ -178,21 +185,21 @@ def extract_and_sort(data):
     unmatched_keys = []  # List to store unmatched keys
 
     def sort_key(link):
-        # Match 'volume-##-episode-###'
-        match_episode = re.search(r'volume-(\d+)-episode-(\d+)', link.lower())
-        if match_episode:
-            vol = int(match_episode.group(1))
-            episode = int(match_episode.group(2))
-            print(f"Matched volume-{vol}-episode-{episode} for key: {link}")
-            return (vol, 0, episode, 0)
-
         # Match 'volume-##-prologue-###'
         match_prologue = re.search(r'volume-(\d+)-prologue-(\d+)', link.lower())
         if match_prologue:
             vol = int(match_prologue.group(1))
             prologue = int(match_prologue.group(2))
             print(f"Matched volume-{vol}-prologue-{prologue} for key: {link}")
-            return (vol, 0, prologue, 0)
+            return (vol, 0, prologue, 0)  # Prologue is prioritized (comes before episodes)
+
+        # Match 'volume-##-episode-###'
+        match_episode = re.search(r'volume-(\d+)-episode-(\d+)', link.lower())
+        if match_episode:
+            vol = int(match_episode.group(1))
+            episode = int(match_episode.group(2))
+            print(f"Matched volume-{vol}-episode-{episode} for key: {link}")
+            return (vol, 1, episode, 0)  # Episode comes after prologue
 
         # Match 'vol-##-ch-###'
         match_chapter = re.search(r'vol-(\d+)-ch-(\d+)', link.lower())
@@ -200,14 +207,14 @@ def extract_and_sort(data):
             vol = int(match_chapter.group(1))
             ch = int(match_chapter.group(2))
             print(f"Matched vol-{vol}-ch-{ch} for key: {link}")
-            return (vol, ch, 0, 0)
+            return (vol, 2, ch, 0)  # Chapters come after episodes
 
         # Match 'ch-###' (standalone chapter)
         match_standalone_ch = re.search(r'ch-(\d+)', link.lower())
         if match_standalone_ch:
             ch = int(match_standalone_ch.group(1))
             print(f"Matched ch-{ch} for key: {link}")
-            return (0, ch, 0, 0)
+            return (float('inf'), ch, 0, 0)  # Standalone chapters come last
 
         # Log unmatched link
         unmatched_keys.append(link)
@@ -247,7 +254,8 @@ def extract_and_sort(data):
 
 def download_manga_images(image_data, manga_name):
     """
-    Downloads images for a manga into structured folders based on volume and chapter/episode/prologue.
+    Downloads images for a manga into structured folders based on volume and chapter/episode/prologue,
+    prioritizing prologues over episodes within the same volume.
 
     Parameters:
         image_data (dict): A dictionary where keys are URLs with recognized patterns such as
@@ -262,21 +270,29 @@ def download_manga_images(image_data, manga_name):
     main_folder = os.path.join(os.getcwd(), manga_name)
     os.makedirs(main_folder, exist_ok=True)
 
-    for url, image_urls in image_data.items():
+    # Sort the image_data keys using the same logic as extract_and_sort
+    sorted_urls = sorted(image_data.keys(), key=lambda url: (
+        int(re.search(r'volume-(\d+)', url.lower()).group(1)) if re.search(r'volume-(\d+)', url.lower()) else float('inf'),
+        0 if re.search(r'prologue', url.lower()) else 1,
+        int(re.search(r'(episode|prologue|ch)-(\d+)', url.lower()).group(2)) if re.search(r'(episode|prologue|ch)-(\d+)', url.lower()) else float('inf')
+    ))
+
+    for url in sorted_urls:
+        image_urls = image_data[url]
         # Extract details based on patterns
-        match_episode = re.search(r'volume-(\d+)-episode-(\d+)', url.lower())
         match_prologue = re.search(r'volume-(\d+)-prologue-(\d+)', url.lower())
+        match_episode = re.search(r'volume-(\d+)-episode-(\d+)', url.lower())
         match_chapter = re.search(r'vol-(\d+)-ch-(\d+)', url.lower())
         match_standalone_ch = re.search(r'ch-(\d+)', url.lower())
 
-        if match_episode:
-            vol = match_episode.group(1)
-            episode = match_episode.group(2)
-            subfolder_name = f"volume-{vol}-episode-{episode}"
-        elif match_prologue:
+        if match_prologue:
             vol = match_prologue.group(1)
             prologue = match_prologue.group(2)
             subfolder_name = f"volume-{vol}-prologue-{prologue}"
+        elif match_episode:
+            vol = match_episode.group(1)
+            episode = match_episode.group(2)
+            subfolder_name = f"volume-{vol}-episode-{episode}"
         elif match_chapter:
             vol = match_chapter.group(1)
             ch = match_chapter.group(2)
@@ -309,11 +325,15 @@ def download_manga_images(image_data, manga_name):
 
 
 
+
+
+
 def convert_chapter_pdfs(manga_folder):
     """
     Converts all images in each subfolder of the given folder into a single PDF for each subfolder,
     saves the PDFs in the main folder, and deletes all subfolders and their contents after conversion.
-
+    If any unreadable images are encountered, the source folder is not deleted.
+    
     Parameters:
         manga_folder (str): The root folder containing subfolders with images.
     
@@ -324,6 +344,8 @@ def convert_chapter_pdfs(manga_folder):
         print(f"Error: The specified folder '{manga_folder}' does not exist.")
         return
 
+    error_folders = []  # List to track folders with errors or unreadable files
+
     # Traverse all subdirectories
     for root, dirs, files in os.walk(manga_folder, topdown=False):  # Process subfolders after their contents
         # Skip the root level; process only subfolders
@@ -332,38 +354,71 @@ def convert_chapter_pdfs(manga_folder):
 
         # Filter and sort image files (.jpg, .jpeg, .png)
         images = sorted([f for f in files if f.lower().endswith((".jpg", ".jpeg", ".png"))])
+        valid_images = []
+        folder_has_errors = False
 
         if images:
-            try:
-                # Create a list to hold Image objects
-                img_objects = [Image.open(os.path.join(root, img)).convert("RGB") for img in images]
-                
-                # Define the PDF output path in the main folder
-                pdf_filename = os.path.join(manga_folder, os.path.basename(root) + ".pdf")
-                
-                # Save the images as a single PDF
-                img_objects[0].save(pdf_filename, save_all=True, append_images=img_objects[1:])
-                print(f"Converted images in '{root}' to '{pdf_filename}'")
+            for img in images:
+                img_path = os.path.join(root, img)
+                try:
+                    # Attempt to open the image
+                    image = Image.open(img_path).convert("RGB")
+                    valid_images.append(image)
+                except UnidentifiedImageError:
+                    print(f"Skipped unreadable or corrupt image: {img_path}")
+                    folder_has_errors = True
+                except Exception as e:
+                    print(f"Error processing image '{img_path}': {e}")
+                    folder_has_errors = True
 
-                # Delete all files in the subfolder
-                for f in files:
-                    file_path = os.path.join(root, f)
-                    os.remove(file_path)
+            if valid_images:
+                try:
+                    # Define the PDF output path in the main folder
+                    pdf_filename = os.path.join(manga_folder, os.path.basename(root) + ".pdf")
+                    
+                    # Save the valid images as a single PDF
+                    valid_images[0].save(pdf_filename, save_all=True, append_images=valid_images[1:])
+                    print(f"Converted images in '{root}' to '{pdf_filename}'")
 
-                # Remove the now-empty subfolder
-                os.rmdir(root)
-                print(f"Deleted subfolder '{root}', leaving only '{pdf_filename}' in the main folder")
-            except Exception as e:
-                print(f"Error processing images in '{root}': {e}")
+                    # Delete files and folder only if there are no errors
+                    if not folder_has_errors:
+                        try:
+                            for f in files:
+                                file_path = os.path.join(root, f)
+                                os.remove(file_path)
+                            os.rmdir(root)
+                            print(f"Deleted subfolder '{root}', leaving only '{pdf_filename}' in the main folder")
+                        except Exception as e:
+                            print(f"Error deleting folder or files in '{root}': {e}. Folder not deleted.")
+                    else:
+                        error_folders.append(root)
+                        print(f"Folder '{root}' contains errors or unreadable files. Not deleted.")
+                except Exception as e:
+                    print(f"Error saving PDF for '{root}': {e}")
+                    error_folders.append(root)
+            else:
+                print(f"No valid images found in '{root}'. Skipping PDF creation.")
+                error_folders.append(root)
         else:
             print(f"No valid images found in '{root}'. Skipping...")
+            error_folders.append(root)
 
-    print("All subfolders have been processed.")
-    
+    # Summary of folders with errors
+    if error_folders:
+        print("\nSummary: The following folders contained errors or unreadable files and were not deleted:")
+        for folder in error_folders:
+            print(f" - {folder}")
+    else:
+        print("\nAll folders processed successfully without errors.")
+
+
 def reorder_files_in_place(folder_name):
     """
-    Reorder files in the same folder based on chapter numbers ('ch-###') first,
-    and volume numbers ('vol-XX') second as a tiebreaker.
+    Reorder files in the same folder based on:
+    1. Volume numbers ('vol-XX')
+    2. Priority ('prologue' first, 'episode' second)
+    3. Chapter/Episode/Prologue numbers ('ch-###', 'episode-###', 'prologue-###')
+    
     Renames files in-place by adding numerical prefixes to enforce order.
 
     Parameters:
@@ -376,34 +431,46 @@ def reorder_files_in_place(folder_name):
     if not os.path.isdir(folder_path):
         raise FileNotFoundError(f"Folder '{folder_name}' not found.")
     
-    def extract_vol_ch(filename):
+    def extract_sort_key(filename):
         """
-        Extract volume and chapter numbers from the filename.
-        Returns a tuple (chapter, volume).
+        Extract volume, priority (prologue or episode), and number from the filename.
+        Returns a tuple (volume, priority, number).
         """
-        chapter_match = re.search(r'ch-(\d+)', filename, re.IGNORECASE)
         volume_match = re.search(r'vol-(\d+)', filename, re.IGNORECASE)
+        prologue_match = re.search(r'prologue-(\d+)', filename, re.IGNORECASE)
+        episode_match = re.search(r'episode-(\d+)', filename, re.IGNORECASE)
+        chapter_match = re.search(r'ch-(\d+)', filename, re.IGNORECASE)
 
-        chapter = int(chapter_match.group(1)) if chapter_match else float('inf')
         volume = int(volume_match.group(1)) if volume_match else float('inf')
+        if prologue_match:
+            priority = 0  # Prologue comes first
+            number = int(prologue_match.group(1))
+        elif episode_match:
+            priority = 1  # Episode comes second
+            number = int(episode_match.group(1))
+        elif chapter_match:
+            priority = 2  # Chapter comes last
+            number = int(chapter_match.group(1))
+        else:
+            priority = float('inf')  # Files with no recognizable pattern go last
+            number = float('inf')
 
-        return chapter, volume
+        return volume, priority, number
 
     # Get a list of files in the folder
     files = os.listdir(folder_path)
 
-    # Build a list of tuples: ((chapter, volume), original_filename)
+    # Build a list of tuples: ((volume, priority, number), original_filename)
     file_data = []
     for file in files:
-        vol_ch_data = extract_vol_ch(file)
-        if vol_ch_data[0] != float('inf'):  # Only consider files with valid chapter numbers
-            file_data.append((vol_ch_data, file))
+        sort_key = extract_sort_key(file)
+        file_data.append((sort_key, file))
 
-    # Sort by chapter first, then volume
+    # Sort by volume, priority, and number
     sorted_files = sorted(file_data, key=lambda x: x[0])
 
     # Rename files in place with numerical prefixes
-    for i, ((chapter, volume), filename) in enumerate(sorted_files):
+    for i, ((volume, priority, number), filename) in enumerate(sorted_files):
         original_path = os.path.join(folder_path, filename)
         # Add a numerical prefix to enforce order
         new_filename = f"{i+1:03d}_{filename}"
@@ -414,6 +481,7 @@ def reorder_files_in_place(folder_name):
         print(f"Renamed: {original_path} -> {new_path}")
 
     print(f"Files successfully reordered in place within '{folder_path}'.")
+
 
 
 def find_or_create_manga_collection_folder(folder_name="Manga Collection"):
@@ -496,15 +564,19 @@ def append_pdfs_to_manga_collection(input_folder="input_pdfs", collection_folder
 url = "https://mangapark.io/title/219752-en-berserk"
 keyword = "Berserk"
 manga_title = 'Berserk - Kentaro Miura'
-links = get_manga_links(url, keyword,page_limit=None)
+links = get_manga_links(url, keyword,page_limit=2)
 
 # %%
 ordered = extract_and_sort(links)
 # %%
-image_urls,error_log = get_image_urls(ordered)
+
+errors=['https://mangapark.io/title/219752-en-berserk/8937480-volume-1-prologue-1','https://mangapark.io/title/219752-en-berserk/8937506-volume-1-prologue-2']
+# %%
+image_urls,error_log = get_image_urls(errors)
 
 #%%
 download_manga_images(image_urls, manga_title)
+#This might look sorta wonky but order will be correct once we get to reorder file in place
 # %%
 convert_chapter_pdfs(manga_folder=manga_title)
 # %%
